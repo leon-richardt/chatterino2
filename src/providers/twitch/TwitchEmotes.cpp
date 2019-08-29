@@ -1,6 +1,7 @@
 #include "providers/twitch/TwitchEmotes.hpp"
 
 #include "common/NetworkRequest.hpp"
+#include "common/Outcome.hpp"
 #include "debug/Benchmark.hpp"
 #include "debug/Log.hpp"
 #include "messages/Emote.hpp"
@@ -75,6 +76,12 @@ EmotePtr TwitchEmotes::getOrCreateEmote(const EmoteId &id,
 
     if (!shared)
     {
+
+        // TODO: Get channel name via API call to twitchemotes.com here?
+        // Should probably be done in a method
+        auto qName = this->getChannelByEmote(id);
+        std::cout << "name = " << qName.toStdString() << std::endl;
+
         (*cache)[id] = shared = std::make_shared<Emote>(
             Emote{EmoteName{name},
                   ImageSet{
@@ -93,6 +100,66 @@ Url TwitchEmotes::getEmoteLink(const EmoteId &id, const QString &emoteScale)
     return {QString(TWITCH_EMOTE_TEMPLATE)
                 .replace("{id}", id.string)
                 .replace("{scale}", emoteScale)};
+}
+
+QString TwitchEmotes::parseChannelName(const rapidjson::Document &document)
+{
+    auto array = result.parseRapidJson();
+    for (auto &a : array.GetArray())
+    {
+        QString channelName;
+        rj::getSafe(a, "channel_name", channelName);
+        if (channelName.size() > 0)
+            return channelName;
+    }
+
+    return QString();
+}
+
+QString TwitchEmotes::getChannelByEmote(const EmoteId &id)
+{
+    auto ret = std::make_shared<QString>();
+    QString url("https://api.twitchemotes.com/api/v4/emotes?id=" + id.string);
+
+    NetworkRequest(url)
+    
+        .onError([=](int errorCode) {
+            log("[TwitchEmotes::getChannelByEmote] Error {}", errorCode);
+            if (errorCode == 203)
+            {
+                // onFinished(FollowResult_NotFollowing);
+            }
+            else
+            {
+                // onFinished(FollowResult_Failed);
+            }
+
+            return true;
+        })
+        .onSuccess([ret](auto result) -> Outcome {
+            ret->append("penis");
+
+            // auto &root = array.GetArray()[0];
+            // log("root = {}", rj::stringify(root));
+            // QString channelName;
+
+            // if (!rj::getSafe(root, "channel_name", channelName))
+            // {
+            //     log("No channel_name in load emotes response {}", rj::stringify(root));
+            //     ret = "Twitch Global";
+            //     return Success;
+            // }
+
+            // ret = channelName;
+            // log("Channel name found and set to {}", ret);
+            
+            return Success;
+        })
+        .execute();
+
+        // TODO: Remove
+        std::cout << "ret = " << ret->toStdString() << std::endl;
+        return *ret;
 }
 
 }  // namespace chatterino
