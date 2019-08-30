@@ -14,7 +14,6 @@ struct Emote {
     ImageSet images;
     Tooltip tooltip;
     Url homePage;
-    QString channelName;
 
     // FOURTF: no solution yet, to be refactored later
     const QString &getCopyString() const
