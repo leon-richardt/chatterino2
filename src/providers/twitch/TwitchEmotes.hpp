@@ -39,7 +39,7 @@ public:
 private:
     Url getEmoteLink(const EmoteId &id, const QString &emoteScale);
     QString parseChannelName(const rapidjson::Document &document);
-    QString getChannelByEmote(const EmoteId &id);
+    void setEmoteChannel(const EmoteId &id);
 
     UniqueAccess<std::unordered_map<EmoteId, std::weak_ptr<Emote>>>
         twitchEmotesCache_;

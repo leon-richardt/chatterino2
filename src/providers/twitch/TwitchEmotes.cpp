@@ -76,12 +76,6 @@ EmotePtr TwitchEmotes::getOrCreateEmote(const EmoteId &id,
 
     if (!shared)
     {
-
-        // TODO: Get channel name via API call to twitchemotes.com here?
-        // Should probably be done in a method
-        auto qName = this->getChannelByEmote(id);
-        std::cout << "name = " << qName.toStdString() << std::endl;
-
         (*cache)[id] = shared = std::make_shared<Emote>(
             Emote{EmoteName{name},
                   ImageSet{
@@ -89,7 +83,9 @@ EmotePtr TwitchEmotes::getOrCreateEmote(const EmoteId &id,
                       Image::fromUrl(getEmoteLink(id, "2.0"), 0.5),
                       Image::fromUrl(getEmoteLink(id, "3.0"), 0.25),
                   },
-                  Tooltip{name + "<br>Twitch Emote"}, Url{}});
+                  Tooltip{name + "<br>Twitch Global Emote"}, Url{}});
+
+        this->setEmoteChannel(id);
     }
 
     return shared;
@@ -104,27 +100,32 @@ Url TwitchEmotes::getEmoteLink(const EmoteId &id, const QString &emoteScale)
 
 QString TwitchEmotes::parseChannelName(const rapidjson::Document &document)
 {
-    auto array = result.parseRapidJson();
-    for (auto &a : array.GetArray())
+    // There should only be one entry in the array, but just to be sure ...
+    for (auto &a : document.GetArray())
     {
         QString channelName;
-        rj::getSafe(a, "channel_name", channelName);
-        if (channelName.size() > 0)
+        if(!rj::getSafe(a, "channel_name", channelName))
+        {
+            continue;
+        }
+
+        if (!channelName.isEmpty())
             return channelName;
     }
 
+    // Return an empty name when no channel name was found. This should only
+    // happen for global Twitch emotes.
     return QString();
 }
 
-QString TwitchEmotes::getChannelByEmote(const EmoteId &id)
+void TwitchEmotes::setEmoteChannel(const EmoteId &id)
 {
-    auto ret = std::make_shared<QString>();
     QString url("https://api.twitchemotes.com/api/v4/emotes?id=" + id.string);
 
     NetworkRequest(url)
     
         .onError([=](int errorCode) {
-            log("[TwitchEmotes::getChannelByEmote] Error {}", errorCode);
+            log("[TwitchEmotes::setEmoteChannel] Error {}", errorCode);
             if (errorCode == 203)
             {
                 // onFinished(FollowResult_NotFollowing);
@@ -136,30 +137,20 @@ QString TwitchEmotes::getChannelByEmote(const EmoteId &id)
 
             return true;
         })
-        .onSuccess([ret](auto result) -> Outcome {
-            ret->append("penis");
+        .onSuccess([this, id](auto result) -> Outcome {
+            auto cache = this->twitchEmotesCache_.access();
+            auto shared = (*cache)[id].lock();
 
-            // auto &root = array.GetArray()[0];
-            // log("root = {}", rj::stringify(root));
-            // QString channelName;
+            auto channelName = this->parseChannelName(result.parseRapidJson());
 
-            // if (!rj::getSafe(root, "channel_name", channelName))
-            // {
-            //     log("No channel_name in load emotes response {}", rj::stringify(root));
-            //     ret = "Twitch Global";
-            //     return Success;
-            // }
-
-            // ret = channelName;
-            // log("Channel name found and set to {}", ret);
+            if (!channelName.isEmpty())
+                shared->tooltip = Tooltip{shared->name.string + "<br>Sub Emote<br>Channel: " + channelName};
             
             return Success;
         })
         .execute();
 
-        // TODO: Remove
-        std::cout << "ret = " << ret->toStdString() << std::endl;
-        return *ret;
+        return;
 }
 
 }  // namespace chatterino
