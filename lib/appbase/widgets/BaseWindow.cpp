@@ -44,12 +44,12 @@
 
 namespace AB_NAMESPACE {
 
-BaseWindow::BaseWindow(QWidget *parent, Flags _flags)
+BaseWindow::BaseWindow(FlagsEnum<Flags> _flags, QWidget *parent)
     : BaseWidget(parent,
-                 Qt::Window | ((_flags & TopMost) ? Qt::WindowStaysOnTopHint
-                                                  : Qt::WindowFlags()))
-    , enableCustomFrame_(_flags & EnableCustomFrame)
-    , frameless_(_flags & Frameless)
+                 Qt::Window | (_flags.has(TopMost) ? Qt::WindowStaysOnTopHint
+                                                   : Qt::WindowFlags()))
+    , enableCustomFrame_(_flags.has(EnableCustomFrame))
+    , frameless_(_flags.has(Frameless))
     , flags_(_flags)
 {
     if (this->frameless_)
@@ -61,7 +61,12 @@ BaseWindow::BaseWindow(QWidget *parent, Flags _flags)
     this->init();
 
     getSettings()->uiScale.connect(
-        [this]() { postToThread([this] { this->updateScale(); }); },
+        [this]() {
+            postToThread([this] {
+                this->updateScale();
+                this->updateScale();
+            });
+        },
         this->connections_);
 
     this->updateScale();
@@ -69,9 +74,31 @@ BaseWindow::BaseWindow(QWidget *parent, Flags _flags)
     createWindowShortcut(this, "CTRL+0",
                          [] { getSettings()->uiScale.setValue(1); });
 
-    //    QTimer::this->scaleChangedEvent(this->getScale());
-
     this->resize(300, 150);
+
+#ifdef USEWINSDK
+    this->useNextBounds_.setSingleShot(true);
+    QObject::connect(&this->useNextBounds_, &QTimer::timeout, this,
+                     [this]() { this->currentBounds_ = this->nextBounds_; });
+#endif
+}
+
+void BaseWindow::setInitialBounds(const QRect &bounds)
+{
+#ifdef USEWINSDK
+    this->initalBounds_ = bounds;
+#else
+    this->setGeometry(bounds);
+#endif
+}
+
+QRect BaseWindow::getBounds()
+{
+#ifdef USEWINSDK
+    return this->currentBounds_;
+#else
+    return this->geometry();
+#endif
 }
 
 float BaseWindow::scale() const
@@ -82,11 +109,6 @@ float BaseWindow::scale() const
 float BaseWindow::qtFontScale() const
 {
     return this->scale() / this->nativeScale_;
-}
-
-BaseWindow::Flags BaseWindow::getFlags()
-{
-    return this->flags_;
 }
 
 void BaseWindow::init()
@@ -177,7 +199,7 @@ void BaseWindow::init()
 
 #ifdef USEWINSDK
     // fourtf: don't ask me why we need to delay this
-    if (!(this->flags_ & Flags::TopMost))
+    if (!this->flags_.has(TopMost))
     {
         QTimer::singleShot(1, this, [this] {
             getSettings()->windowTopMost.connect(
@@ -341,7 +363,7 @@ void BaseWindow::onFocusLost()
 void BaseWindow::mousePressEvent(QMouseEvent *event)
 {
 #ifndef Q_OS_WIN
-    if (this->flags_ & FramelessDraggable)
+    if (this->flags_.has(FramelessDraggable))
     {
         this->movingRelativePos = event->localPos();
         if (auto widget =
@@ -377,7 +399,7 @@ void BaseWindow::mousePressEvent(QMouseEvent *event)
 void BaseWindow::mouseReleaseEvent(QMouseEvent *event)
 {
 #ifndef Q_OS_WIN
-    if (this->flags_ & FramelessDraggable)
+    if (this->flags_.has(FramelessDraggable))
     {
         if (this->moving)
         {
@@ -393,7 +415,7 @@ void BaseWindow::mouseReleaseEvent(QMouseEvent *event)
 void BaseWindow::mouseMoveEvent(QMouseEvent *event)
 {
 #ifndef Q_OS_WIN
-    if (this->flags_ & FramelessDraggable)
+    if (this->flags_.has(FramelessDraggable))
     {
         if (this->moving)
         {
@@ -492,7 +514,7 @@ void BaseWindow::resizeEvent(QResizeEvent *)
     getApp()->windows->queueSave();
 #endif
 
-    this->moveIntoDesktopRect(this);
+    //this->moveIntoDesktopRect(this);
 
     this->calcButtonsSizes();
 }
@@ -510,6 +532,18 @@ void BaseWindow::moveEvent(QMoveEvent *event)
 void BaseWindow::closeEvent(QCloseEvent *)
 {
     this->closing.invoke();
+}
+
+void BaseWindow::showEvent(QShowEvent *)
+{
+    if (this->frameless_)
+    {
+        this->moveIntoDesktopRect(this);
+        qDebug() << "show";
+
+        QTimer::singleShot(30, this,
+                           [this] { this->moveIntoDesktopRect(this); });
+    }
 }
 
 void BaseWindow::moveIntoDesktopRect(QWidget *parent)
@@ -574,6 +608,11 @@ bool BaseWindow::nativeEvent(const QByteArray &eventType, void *message,
             returnValue = this->handleSIZE(msg);
             break;
 
+        case WM_MOVE:
+            returnValue = this->handleMOVE(msg);
+            *result = 0;
+            break;
+
         case WM_NCHITTEST:
             returnValue = this->handleNCHITTEST(msg, result);
             break;
@@ -615,7 +654,7 @@ void BaseWindow::paintEvent(QPaintEvent *)
 void BaseWindow::updateScale()
 {
     auto scale =
-        this->nativeScale_ * (this->flags_ & DisableCustomScaling
+        this->nativeScale_ * (this->flags_.has(DisableCustomScaling)
                                   ? 1
                                   : getABSettings()->getClampedUiScale());
 
@@ -674,17 +713,11 @@ bool BaseWindow::handleDPICHANGED(MSG *msg)
 
     float _scale = dpi / 96.f;
 
-    static bool firstResize = true;
-
-    if (!firstResize)
-    {
-        auto *prcNewWindow = reinterpret_cast<RECT *>(msg->lParam);
-        SetWindowPos(msg->hwnd, nullptr, prcNewWindow->left, prcNewWindow->top,
-                     prcNewWindow->right - prcNewWindow->left,
-                     prcNewWindow->bottom - prcNewWindow->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-    firstResize = false;
+    auto *prcNewWindow = reinterpret_cast<RECT *>(msg->lParam);
+    SetWindowPos(msg->hwnd, nullptr, prcNewWindow->left, prcNewWindow->top,
+                 prcNewWindow->right - prcNewWindow->left,
+                 prcNewWindow->bottom - prcNewWindow->top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 
     this->nativeScale_ = _scale;
     this->updateScale();
@@ -704,12 +737,23 @@ bool BaseWindow::handleSHOWWINDOW(MSG *msg)
         this->updateScale();
     }
 
-    if (!this->shown_ && this->isVisible() && this->hasCustomWindowFrame())
+    if (!this->shown_ && this->isVisible())
     {
-        this->shown_ = true;
+        if (this->hasCustomWindowFrame())
+        {
+            this->shown_ = true;
 
-        const MARGINS shadow = {8, 8, 8, 8};
-        DwmExtendFrameIntoClientArea(HWND(this->winId()), &shadow);
+            const MARGINS shadow = {8, 8, 8, 8};
+            DwmExtendFrameIntoClientArea(HWND(this->winId()), &shadow);
+        }
+        if (!this->initalBounds_.isNull())
+        {
+            ::SetWindowPos(msg->hwnd, nullptr, this->initalBounds_.x(),
+                           this->initalBounds_.y(), this->initalBounds_.width(),
+                           this->initalBounds_.height(),
+                           SWP_NOZORDER | SWP_NOACTIVATE);
+            this->currentBounds_ = this->initalBounds_;
+        }
     }
 
     this->calcButtonsSizes();
@@ -770,12 +814,40 @@ bool BaseWindow::handleSIZE(MSG *msg)
             {
                 this->ui_.windowLayout->setContentsMargins(0, 1, 0, 0);
             }
+
+            this->isNotMinimizedOrMaximized_ = msg->wParam == SIZE_RESTORED;
+
+            if (this->isNotMinimizedOrMaximized_)
+            {
+                RECT rect;
+                ::GetWindowRect(msg->hwnd, &rect);
+                this->currentBounds_ =
+                    QRect(QPoint(rect.left, rect.top),
+                          QPoint(rect.right - 1, rect.bottom - 1));
+            }
+            this->useNextBounds_.stop();
         }
     }
     return false;
 #else
     return false;
 #endif
+}
+
+bool BaseWindow::handleMOVE(MSG *msg)
+{
+#ifdef USEWINSDK
+    if (this->isNotMinimizedOrMaximized_)
+    {
+        RECT rect;
+        ::GetWindowRect(msg->hwnd, &rect);
+        this->nextBounds_ = QRect(QPoint(rect.left, rect.top),
+                                  QPoint(rect.right - 1, rect.bottom - 1));
+
+        this->useNextBounds_.start(10);
+    }
+#endif
+    return false;
 }
 
 bool BaseWindow::handleNCHITTEST(MSG *msg, long *result)
@@ -880,7 +952,7 @@ bool BaseWindow::handleNCHITTEST(MSG *msg, long *result)
 
         return true;
     }
-    else if (this->flags_ & FramelessDraggable)
+    else if (this->flags_.has(FramelessDraggable))
     {
         *result = 0;
         bool client = false;

@@ -1,4 +1,4 @@
-#include "widgets/AccountSwitchPopupWidget.hpp"
+#include "widgets/AccountSwitchPopup.hpp"
 #include "debug/Log.hpp"
 #include "widgets/dialogs/SettingsDialog.hpp"
 
@@ -10,10 +10,9 @@
 
 namespace chatterino {
 
-AccountSwitchPopupWidget::AccountSwitchPopupWidget(QWidget *parent)
-    : QWidget(parent)
+AccountSwitchPopup::AccountSwitchPopup(QWidget *parent)
+    : BaseWindow({BaseWindow::TopMost, BaseWindow::Frameless}, parent)
 {
-    this->setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
 #ifdef Q_OS_LINUX
     this->setWindowFlag(Qt::Popup);
 #endif
@@ -24,8 +23,6 @@ AccountSwitchPopupWidget::AccountSwitchPopupWidget(QWidget *parent)
     QVBoxLayout *vbox = new QVBoxLayout(this);
     this->ui_.accountSwitchWidget->setFocusPolicy(Qt::NoFocus);
     vbox->addWidget(this->ui_.accountSwitchWidget);
-
-    // vbox->setSizeConstraint(QLayout::SetMinimumSize);
 
     auto hbox = new QHBoxLayout();
     auto manageAccountsButton = new QPushButton(this);
@@ -38,22 +35,22 @@ AccountSwitchPopupWidget::AccountSwitchPopupWidget(QWidget *parent)
         SettingsDialog::showDialog(SettingsDialogPreference::Accounts);  //
     });
 
-    this->setLayout(vbox);
+    this->getLayoutContainer()->setLayout(vbox);
 
-    //    this->setStyleSheet("background: #333");
+    this->setScaleIndependantSize(200, 200);
 }
 
-void AccountSwitchPopupWidget::refresh()
+void AccountSwitchPopup::refresh()
 {
     this->ui_.accountSwitchWidget->refresh();
 }
 
-void AccountSwitchPopupWidget::focusOutEvent(QFocusEvent *)
+void AccountSwitchPopup::focusOutEvent(QFocusEvent *)
 {
     this->hide();
 }
 
-void AccountSwitchPopupWidget::paintEvent(QPaintEvent *)
+void AccountSwitchPopup::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
 
