@@ -785,6 +785,8 @@ void ChannelView::messageAppended(MessagePtr &message,
         }
     }
 
+    qDebug() << "message" << message->messageText << "triggers notifs:"
+             << !messageFlags->has(MessageFlag::DoNotTriggerNotification);
     if (!messageFlags->has(MessageFlag::DoNotTriggerNotification))
     {
         if (messageFlags->has(MessageFlag::Highlighted) &&

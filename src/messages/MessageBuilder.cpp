@@ -122,6 +122,7 @@ MessageBuilder::MessageBuilder(SystemMessageTag, const QString &text,
     }
     this->message().flags.set(MessageFlag::System);
     this->message().flags.set(MessageFlag::DoNotTriggerNotification);
+    qDebug() << "donottrigger set on message:" << text;
     this->message().messageText = text;
     this->message().searchText = text;
 }
