@@ -101,8 +101,6 @@ void MessageLayoutContainer::_addElement(MessageLayoutElement *element,
 
     int newLineHeight = element->getRect().height();
 
-    const bool isRtl = element->getText().isRightToLeft();
-
     // compact emote offset
     bool isCompactEmote =
         getSettings()->compactEmotes &&
@@ -117,65 +115,46 @@ void MessageLayoutContainer::_addElement(MessageLayoutElement *element,
     // update line height
     this->lineHeight_ = std::max(this->lineHeight_, newLineHeight);
 
-    auto xOffset = 0;
+    // TODO(leon): Correctly handle non-text elements (emotes, badges etc)
+    const bool elementRtl = element->getText().isRightToLeft();
 
-    if (element->getCreator().getFlags().has(
-            MessageElementFlag::ZeroWidthEmote))
+    // If the current group has a different script direction, we need to add a
+    // group with the new element's direction.
+    // If the element to be added is not a text element, it will be added to
+    // the current group regardless of script direction.
+    const bool needNewGroup = this->elements_.empty() ||
+                              (!element->getText().isEmpty() &&
+                               this->elements_.back().isRtl() != elementRtl);
+
+    if (needNewGroup)
     {
-        xOffset -= element->getRect().width() + this->spaceWidth_;
+        const size_t startIndex = [this] {
+            if (this->elements_.empty())
+            {
+                // Required to prevent type deduction error
+                return static_cast<size_t>(0);
+            }
+
+            const size_t prevStart = this->elements_.back().startIndex();
+            return prevStart + this->elements_.back().size();
+        }();
+
+        this->elements_.emplace_back(*this, elementRtl, startIndex);
     }
 
-    auto yOffset = 0;
-
-    if (element->getCreator().getFlags().has(
-            MessageElementFlag::ChannelPointReward) &&
-        element->getCreator().getFlags().hasNone(
-            {MessageElementFlag::TwitchEmoteImage}))
+    // TODO(leon): Where to do this?
+    if (this->elements_.back().isRtl())
     {
-        yOffset -= (this->margin.top * this->scale_);
-    }
-
-    // set move element
-    element->setPosition(
-        QPoint(this->currentX_ + xOffset,
-               this->currentY_ - element->getRect().height() + yOffset));
-
-    // Shift previous elements to the right if they are RTL
-    if (isRtl)
-    {
-        for (const auto &prevElement : this->elements_)
+        // TODO(leon): Skip first group?
+        for (size_t i = 1; i < this->elements_.size(); ++i)
         {
-            // TODO(leon): Does this behave correctly for non-text elements
-            //             (e.g. emotes)?
-            if (!prevElement->getText().isRightToLeft())
-                continue;
-
-            const auto &posBeforeShift = prevElement->getRect().topLeft();
-            const auto &widthToShift = QPoint(element->getRect().width(), 0);
-            prevElement->setPosition(posBeforeShift + widthToShift);
+            this->elements_[i].shift(element->getRect().width());
         }
     }
 
-    // add element
-    this->elements_.push_back(std::unique_ptr<MessageLayoutElement>(element));
-
-    // set current x
-    if (!element->getCreator().getFlags().has(
-            MessageElementFlag::ZeroWidthEmote))
-    {
-        if (!isRtl)
-            this->currentX_ += element->getRect().width();
-    }
-
-    if (element->hasTrailingSpace())
-    {
-        // When we add spacing between individual words, we need to make sure to
-        // add it on the correct side.
-        if (isRtl)
-            this->currentX_ -= this->spaceWidth_;
-        else
-            this->currentX_ += this->spaceWidth_;
-    }
+    // TODO(leon): Might be able to only return the x value here
+    const QPoint newCoords = this->elements_.back().addElement(element);
+    this->currentX_ = newCoords.x();
 }
 
 void MessageLayoutContainer::breakLine()
@@ -186,16 +165,18 @@ void MessageLayoutContainer::breakLine()
     {
         const int marginOffset = int(this->margin.left * this->scale_) +
                                  int(this->margin.right * this->scale_);
-        xOffset = (width_ - marginOffset -
-                   this->elements_.at(this->elements_.size() - 1)
-                       ->getRect()
-                       .right()) /
+        xOffset = (this->width_ - marginOffset -
+                   this->elements_.back().members_.back()->getRect().right()) /
                   2;
     }
 
-    for (size_t i = lineStart_; i < this->elements_.size(); i++)
+    const size_t end =
+        this->elements_.back().startIndex() + this->elements_.back().size();
+
+    // Iterates through all elements of the current line
+    for (size_t i = lineStart_; i < end; i++)
     {
-        MessageLayoutElement *element = this->elements_.at(i).get();
+        MessageLayoutElement *element = this->mapToElement(i).get();
 
         bool isCompactEmote =
             getSettings()->compactEmotes &&
@@ -233,12 +214,12 @@ void MessageLayoutContainer::breakLine()
         {(int)lineStart_, 0, this->charIndex_, 0,
          QRect(-100000, this->currentY_, 200000, lineHeight_)});
 
-    for (int i = this->lineStart_; i < this->elements_.size(); i++)
+    for (int i = this->lineStart_; i < end; i++)
     {
-        this->charIndex_ += this->elements_[i]->getSelectionIndexCount();
+        this->charIndex_ += this->mapToElement(i)->getSelectionIndexCount();
     }
 
-    this->lineStart_ = this->elements_.size();
+    this->lineStart_ = this->elements_.back().size();
     //    this->currentX = (int)(this->scale * 8);
 
     if (this->canCollapse() && line_ + 1 >= MAX_UNCOLLAPSED_LINES)
@@ -256,7 +237,8 @@ void MessageLayoutContainer::breakLine()
 
 bool MessageLayoutContainer::atStartOfLine()
 {
-    return this->lineStart_ == this->elements_.size();
+    const DirectionalGroup &lastGroup = this->elements_.back();
+    return this->lineStart_ == lastGroup.startIndex() + lastGroup.size();
 }
 
 bool MessageLayoutContainer::fitsInLine(int _width)
@@ -295,9 +277,12 @@ void MessageLayoutContainer::end()
 
     if (this->lines_.size() != 0)
     {
+        const DirectionalGroup &lastGroup = this->elements_.back();
+
         this->lines_[0].rect.setTop(-100000);
         this->lines_.back().rect.setBottom(100000);
-        this->lines_.back().endIndex = this->elements_.size();
+        this->lines_.back().endIndex =
+            lastGroup.startIndex() + lastGroup.size();
         this->lines_.back().endCharIndex = this->charIndex_;
     }
 }
@@ -315,11 +300,14 @@ bool MessageLayoutContainer::isCollapsed()
 
 MessageLayoutElement *MessageLayoutContainer::getElementAt(QPoint point)
 {
-    for (std::unique_ptr<MessageLayoutElement> &element : this->elements_)
+    for (DirectionalGroup &group : this->elements_)
     {
-        if (element->getRect().contains(point))
+        for (std::unique_ptr<MessageLayoutElement> &element : group.members_)
         {
-            return element.get();
+            if (element->getRect().contains(point))
+            {
+                return element.get();
+            }
         }
     }
 
@@ -329,23 +317,33 @@ MessageLayoutElement *MessageLayoutContainer::getElementAt(QPoint point)
 // painting
 void MessageLayoutContainer::paintElements(QPainter &painter)
 {
-    for (const std::unique_ptr<MessageLayoutElement> &element : this->elements_)
+    // TODO(leon): Remove
+    // qDebug() << "number of groups in this container:" << this->elements_.size();
+    for (const DirectionalGroup &group : this->elements_)
     {
+        for (const std::unique_ptr<MessageLayoutElement> &element :
+             group.members_)
+        {
 #ifdef FOURTF
-        painter.setPen(QColor(0, 255, 0));
-        painter.drawRect(element->getRect());
+            painter.setPen(QColor(0, 255, 0));
+            painter.drawRect(element->getRect());
 #endif
 
-        element->paint(painter);
+            element->paint(painter);
+        }
     }
 }
 
 void MessageLayoutContainer::paintAnimatedElements(QPainter &painter,
                                                    int yOffset)
 {
-    for (const std::unique_ptr<MessageLayoutElement> &element : this->elements_)
+    for (const DirectionalGroup &group : this->elements_)
     {
-        element->paintAnimated(painter, yOffset);
+        for (const std::unique_ptr<MessageLayoutElement> &element :
+             group.members_)
+        {
+            element->paintAnimated(painter, yOffset);
+        }
     }
 }
 
@@ -372,9 +370,9 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
 
             rect.setTop(std::max(0, rect.top()) + yOffset);
             rect.setBottom(std::min(this->height_, rect.bottom()) + yOffset);
-            rect.setLeft(this->elements_[line.startIndex]->getRect().left());
+            rect.setLeft(this->mapToElement(line.startIndex)->getRect().left());
             rect.setRight(
-                this->elements_[line.endIndex - 1]->getRect().right());
+                this->mapToElement(line.endIndex - 1)->getRect().right());
 
             painter.fillRect(rect, selectionColor);
         }
@@ -394,8 +392,8 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
 
             bool returnAfter = false;
             bool breakAfter = false;
-            int x = this->elements_[line.startIndex]->getRect().left();
-            int r = this->elements_[line.endIndex - 1]->getRect().right();
+            int x = this->mapToElement(line.startIndex)->getRect().left();
+            int r = this->mapToElement(line.endIndex - 1)->getRect().right();
 
             if (line.endCharIndex <= selection.selectionMin.charIndex)
             {
@@ -404,11 +402,11 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
 
             for (int i = line.startIndex; i < line.endIndex; i++)
             {
-                int c = this->elements_[i]->getSelectionIndexCount();
+                int c = this->mapToElement(i)->getSelectionIndexCount();
 
                 if (index + c > selection.selectionMin.charIndex)
                 {
-                    x = this->elements_[i]->getXFromIndex(
+                    x = this->mapToElement(i)->getXFromIndex(
                         selection.selectionMin.charIndex - index);
 
                     // ends in same line
@@ -421,11 +419,11 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
                         for (int i = line.startIndex; i < line.endIndex; i++)
                         {
                             int c =
-                                this->elements_[i]->getSelectionIndexCount();
+                                this->mapToElement(i)->getSelectionIndexCount();
 
                             if (index + c > selection.selectionMax.charIndex)
                             {
-                                r = this->elements_[i]->getXFromIndex(
+                                r = this->mapToElement(i)->getXFromIndex(
                                     selection.selectionMax.charIndex - index);
                                 break;
                             }
@@ -446,10 +444,10 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
                             rect.setBottom(
                                 std::min(this->height_, rect.bottom()) +
                                 yOffset);
-                            rect.setLeft(this->elements_[line2.startIndex]
+                            rect.setLeft(this->mapToElement(line2.startIndex)
                                              ->getRect()
                                              .left());
-                            rect.setRight(this->elements_[line2.endIndex - 1]
+                            rect.setRight(this->mapToElement(line2.endIndex - 1)
                                               ->getRect()
                                               .right());
 
@@ -502,23 +500,23 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
 
             rect.setTop(std::max(0, rect.top()) + yOffset);
             rect.setBottom(std::min(this->height_, rect.bottom()) + yOffset);
-            rect.setLeft(this->elements_[line.startIndex]->getRect().left());
+            rect.setLeft(this->mapToElement(line.startIndex)->getRect().left());
             rect.setRight(
-                this->elements_[line.endIndex - 1]->getRect().right());
+                this->mapToElement(line.endIndex - 1)->getRect().right());
 
             painter.fillRect(rect, selectionColor);
             continue;
         }
 
-        int r = this->elements_[line.endIndex - 1]->getRect().right();
+        int r = this->mapToElement(line.endIndex - 1)->getRect().right();
 
         for (int i = line.startIndex; i < line.endIndex; i++)
         {
-            int c = this->elements_[i]->getSelectionIndexCount();
+            int c = this->mapToElement(i)->getSelectionIndexCount();
 
             if (index + c > selection.selectionMax.charIndex)
             {
-                r = this->elements_[i]->getXFromIndex(
+                r = this->mapToElement(i)->getXFromIndex(
                     selection.selectionMax.charIndex - index);
                 break;
             }
@@ -530,7 +528,7 @@ void MessageLayoutContainer::paintSelection(QPainter &painter, int messageIndex,
 
         rect.setTop(std::max(0, rect.top()) + yOffset);
         rect.setBottom(std::min(this->height_, rect.bottom()) + yOffset);
-        rect.setLeft(this->elements_[line.startIndex]->getRect().left());
+        rect.setLeft(this->mapToElement(line.startIndex)->getRect().left());
         rect.setRight(r);
 
         painter.fillRect(rect, selectionColor);
@@ -569,7 +567,7 @@ int MessageLayoutContainer::getSelectionIndex(QPoint point)
 
     for (int i = 0; i < lineEnd; i++)
     {
-        auto &&element = this->elements_[i];
+        auto &&element = this->mapToElement(i);
 
         // end of line
         if (i == lineEnd)
@@ -619,15 +617,18 @@ int MessageLayoutContainer::getFirstMessageCharacterIndex() const
     // Get the index of the first character of the real message
     // (no badges/timestamps/username)
     int index = 0;
-    for (auto &element : this->elements_)
+    for (const DirectionalGroup &group : this->elements_)
     {
-        if (element->getFlags().hasAny(flags))
+        for (auto &element : group.members_)
         {
-            index += element->getSelectionIndexCount();
-        }
-        else
-        {
-            break;
+            if (element->getFlags().hasAny(flags))
+            {
+                index += element->getSelectionIndexCount();
+            }
+            else
+            {
+                break;
+            }
         }
     }
     return index;
@@ -639,46 +640,180 @@ void MessageLayoutContainer::addSelectionText(QString &str, int from, int to,
     int index = 0;
     bool first = true;
 
-    for (auto &element : this->elements_)
+    for (const DirectionalGroup &group : this->elements_)
     {
-        if (copymode == CopyMode::OnlyTextAndEmotes)
+        for (auto &element : group.members_)
         {
-            if (element->getCreator().getFlags().hasAny(
-                    {MessageElementFlag::Timestamp,
-                     MessageElementFlag::Username, MessageElementFlag::Badges}))
-                continue;
-        }
-
-        auto indexCount = element->getSelectionIndexCount();
-
-        if (first)
-        {
-            if (index + indexCount > from)
+            if (copymode == CopyMode::OnlyTextAndEmotes)
             {
-                element->addCopyTextToString(str, from - index, to - index);
-                first = false;
-
-                if (index + indexCount > to)
-                {
-                    break;
-                }
+                if (element->getCreator().getFlags().hasAny(
+                        {MessageElementFlag::Timestamp,
+                         MessageElementFlag::Username,
+                         MessageElementFlag::Badges}))
+                    continue;
             }
-        }
-        else
-        {
-            if (index + indexCount > to)
+
+            auto indexCount = element->getSelectionIndexCount();
+
+            if (first)
             {
-                element->addCopyTextToString(str, 0, to - index);
-                break;
+                if (index + indexCount > from)
+                {
+                    element->addCopyTextToString(str, from - index, to - index);
+                    first = false;
+
+                    if (index + indexCount > to)
+                    {
+                        break;
+                    }
+                }
             }
             else
             {
-                element->addCopyTextToString(str);
+                if (index + indexCount > to)
+                {
+                    element->addCopyTextToString(str, 0, to - index);
+                    break;
+                }
+                else
+                {
+                    element->addCopyTextToString(str);
+                }
             }
+
+            index += indexCount;
+        }
+    }
+}
+
+std::unique_ptr<MessageLayoutElement> &MessageLayoutContainer::mapToElement(
+    size_t index)
+{
+    // First, determine which DirectionalGroup the element is in
+    size_t searchIdx = 0;
+    // TODO(leon): What happens when we run through the entire thing? Loop never breaks then
+    for (const auto &group : this->elements_)
+    {
+        if (group.startIndex() > index)
+        {
+            // We "ran past" the target index, so it must be in the previous group
+            break;
+        }
+        else
+        {
+            searchIdx += 1;
+        }
+    }
+
+    const size_t groupIdx = searchIdx - 1;
+
+    DirectionalGroup &targetGroup = this->elements_.at(groupIdx);
+    const size_t offset = index - targetGroup.startIndex();
+
+    return targetGroup.members_.at(offset);
+}
+
+MessageLayoutContainer::DirectionalGroup::DirectionalGroup(
+    const MessageLayoutContainer &parent, bool rtl, size_t startIndex)
+    : parent_(parent)
+    , isRtl_(rtl)
+    , startIndex_(startIndex)
+{
+}
+
+// TODO(leon): How does this interact with line breaks?
+void MessageLayoutContainer::DirectionalGroup::shift(int width)
+{
+    const QPoint shift(width, 0);
+
+    for (const auto &elem : this->members_)
+        elem->setPosition(elem->getRect().topLeft() + shift);
+}
+
+QPoint MessageLayoutContainer::DirectionalGroup::addElement(
+    MessageLayoutElement *element)
+{
+    int xOffset = 0, yOffset = 0;
+
+    // TODO(leon): fix offset
+    if (element->getCreator().getFlags().has(
+            MessageElementFlag::ZeroWidthEmote))
+    {
+        xOffset -= element->getRect().width() + this->parent_.spaceWidth_;
+    }
+
+    if (element->getCreator().getFlags().has(
+            MessageElementFlag::ChannelPointReward) &&
+        element->getCreator().getFlags().hasNone(
+            {MessageElementFlag::TwitchEmoteImage}))
+    {
+        yOffset -= (this->parent_.margin.top * this->parent_.scale_);
+    }
+
+    int nextX = this->parent_.currentX_;
+    int nextY = this->parent_.currentY_;
+    QPoint currentPos(nextX, nextY);
+
+    if (!this->members_.empty())
+    {
+        const MessageLayoutElement *lastElement = this->members_.back().get();
+
+        currentPos = this->isRtl_ ? lastElement->getRect().topLeft()
+                                  : lastElement->getRect().topRight();
+    }
+
+    if (this->isRtl_)
+    {
+        nextX = currentPos.x() - element->getRect().width();
+        if (element->hasTrailingSpace())
+        {
+            nextX -= this->parent_.spaceWidth_;
         }
 
-        index += indexCount;
+        //nextY = currentPos.y();
+
+        element->setPosition(QPoint(
+            nextX + xOffset, nextY - element->getRect().height() + yOffset));
+
+        this->members_.emplace_back(element);
+
+        // TODO(leon): Correct?
+        this->shift(element->getRect().width());
+
+        return element->getRect().topLeft();
     }
+    else
+    {
+        // nextX = currentPos.x() + element->getRect().width();
+        if (element->hasTrailingSpace())
+        {
+            nextX += this->parent_.spaceWidth_;
+        }
+
+        //nextY = currentPos.y();
+        element->setPosition(QPoint(
+            nextX + xOffset, nextY - element->getRect().height() + yOffset));
+
+        this->members_.emplace_back(element);
+
+        //return QPoint(element->getRect().topRight(), nextY);
+        return element->getRect().topRight();
+    }
+}
+
+bool MessageLayoutContainer::DirectionalGroup::isRtl() const
+{
+    return this->isRtl_;
+}
+
+size_t MessageLayoutContainer::DirectionalGroup::size() const
+{
+    return this->members_.size();
+}
+
+size_t MessageLayoutContainer::DirectionalGroup::startIndex() const
+{
+    return this->startIndex_;
 }
 
 }  // namespace chatterino

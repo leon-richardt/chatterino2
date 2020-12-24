@@ -89,9 +89,38 @@ private:
         QRect rect;
     };
 
+    class DirectionalGroup
+    {
+    public:
+        DirectionalGroup(const MessageLayoutContainer &parent, bool rtl,
+                         size_t startIndex);
+
+        void shift(int width);
+
+        /// Returns the current coordinates after adding the new element
+        QPoint addElement(MessageLayoutElement *element);
+
+        // TODO(leon): Remove setters because we now use friend declaration
+        bool isRtl() const;
+        size_t size() const;
+        size_t startIndex() const;
+
+    private:
+        const MessageLayoutContainer &parent_;
+        const bool isRtl_;
+
+        // Message index of the first MessageLayoutElement in members_
+        const size_t startIndex_;
+        std::vector<std::unique_ptr<MessageLayoutElement>> members_;
+
+        friend MessageLayoutContainer;
+    };
+
     // helpers
     void _addElement(MessageLayoutElement *element, bool forceAdd = false);
     bool canCollapse();
+
+    std::unique_ptr<MessageLayoutElement> &mapToElement(size_t index);
 
     // variables
     float scale_ = 1.f;
@@ -102,7 +131,10 @@ private:
     int currentX_ = 0;
     int currentY_ = 0;
     int charIndex_ = 0;
+
+    // Index of the element that starts the current line
     size_t lineStart_ = 0;
+
     int lineHeight_ = 0;
     int spaceWidth_ = 4;
     int textLineHeight_ = 0;
@@ -110,8 +142,10 @@ private:
     bool canAddMessages_ = true;
     bool isCollapsed_ = false;
 
-    std::vector<std::unique_ptr<MessageLayoutElement>> elements_;
+    std::vector<DirectionalGroup> elements_;
     std::vector<Line> lines_;
+
+    friend class DirectionalGroup;
 };
 
 }  // namespace chatterino
